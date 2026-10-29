@@ -1,0 +1,136 @@
+<title>Sınav Masası</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<style>
+/* Layout: one narrow column, the question card is the only boxed object */
+:root{--bg:#f3f4ef;--fg:#1d2420;--muted:#5d6a62;--line:#cfd6cf;--card:#fff;--accent:#2f6b4f;--ok:#2e7d4f;--bad:#b03a2e;
+--display:"Fraunces",Georgia,serif;--body:"Atkinson Hyperlegible",system-ui,sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141916;--fg:#e6ebe7;--muted:#9aa89f;--line:#2e3832;--card:#1c231f;--accent:#7fc4a0;--ok:#6fcf97;--bad:#ef8a7e;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#141916;--fg:#e6ebe7;--muted:#9aa89f;--line:#2e3832;--card:#1c231f;--accent:#7fc4a0;--ok:#6fcf97;--bad:#ef8a7e;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:16px/1.55 var(--body)}
+main{max-width:640px;margin:0 auto;padding-block:32px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:20px}
+h1{font:600 2rem/1.15 var(--display);margin:0;text-wrap:balance}
+.meta{color:var(--muted);font-size:.9rem;font-variant-numeric:tabular-nums}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px;display:grid;gap:12px}
+.q{font-weight:700;font-size:1.15rem;text-wrap:balance}
+.opt{display:block;width:100%;text-align:left;font:inherit;color:var(--fg);background:transparent;border:1.5px solid var(--line);border-radius:8px;padding:10px 14px;cursor:pointer}
+.opt:hover:not(:disabled){border-color:var(--accent)}
+.opt.ok{border-color:var(--ok);color:var(--ok);font-weight:700}.opt.bad{border-color:var(--bad);color:var(--bad)}
+.exp{color:var(--muted);font-size:.95rem}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.btn{font:700 1rem var(--body);background:var(--accent);color:var(--bg);border:0;border-radius:8px;padding:10px 18px;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--accent);border:1.5px solid var(--accent)}
+button:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+textarea{width:100%;box-sizing:border-box;min-height:140px;font:14px/1.4 ui-monospace,monospace;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:10px}
+details summary{cursor:pointer;color:var(--muted)}
+.err{color:var(--bad)}
+.score{font:600 3rem var(--display);font-variant-numeric:tabular-nums}
+</style>
+
+<main>
+  <header><h1 id="title">Sınav Masası</h1><div class="meta" id="meta"></div></header>
+  <div class="bar"><i id="prog" style="width:0"></i></div>
+  <section id="stage"></section>
+  <details id="library" open>
+    <summary>Quizlerim</summary>
+    <div class="row" id="list" style="margin-top:10px"></div>
+  </details>
+  <details id="loader">
+    <summary>Quiz belgesi yükle</summary>
+    <div style="display:grid;gap:10px;margin-top:10px">
+      <div class="row"><label class="btn ghost" for="file">Dosya seç (.txt / .md)</label><input id="file" type="file" accept=".txt,.md,text/plain" hidden></div>
+      <textarea id="src" placeholder="…ya da belge metnini buraya yapıştır"></textarea>
+      <div class="row"><button class="btn" id="load">Sınavı başlat</button><span class="err" id="err"></span></div>
+    </div>
+  </details>
+  <details>
+    <summary>Claude'dan quiz nasıl istenir?</summary>
+    <div style="display:grid;gap:10px;margin-top:10px">
+      <div class="meta">Bu metni kopyala, köşeli parantezleri doldur ve Claude'a gönder. Gelen cevabı .txt olarak kaydedip yükle ya da yukarıdaki kutuya yapıştır.</div>
+      <textarea id="prompt" readonly>[KONU] hakkında [10] soruluk, [orta] zorlukta bir quiz hazırla. Her sorunun 4 şıkkı ve 1 doğru cevabı olsun. Sadece aşağıdaki biçimi kullan, başka hiçbir şey yazma, kod bloğu kullanma:
+
+# Quiz başlığı
+? Soru metni
+- yanlış şık
++ doğru şık
+- yanlış şık
+- yanlış şık
+> Doğru cevabın kısa açıklaması
+
+Kurallar: başlık satırı "#", soru "?", yanlış şık "-", doğru şık "+", açıklama ">" ile başlar. Doğru şıkkın yeri sorudan soruya değişsin.</textarea>
+      <div class="row"><button class="btn" id="copy">Metni kopyala</button><span class="meta" id="copied"></span></div>
+    </div>
+  </details>
+</main>
+
+<script>window.QUIZZES=[]</script>
+<!-- quiz-yap skill'i her yeni quizi bu dosyaya ekler -->
+<script src="quizler/liste.js"></script>
+<script>
+// Belge formatı: "# Başlık", "? Soru", "- yanlış", "+ doğru", "> açıklama"
+function parse(text){
+  const quiz={title:"Quiz",qs:[]};let q=null;
+  for(const raw of text.split(/\r?\n/)){
+    const l=raw.trim();if(!l)continue;
+    const m=l.slice(1).trim();
+    if(l[0]==="#"&&!quiz.qs.length&&!q)quiz.title=l.replace(/^#+/,"").trim();
+    else if(l[0]==="?"){q={text:m,opts:[],exp:""};quiz.qs.push(q)}
+    else if(q&&(l[0]==="-"||l[0]==="+"))q.opts.push({text:m,ok:l[0]==="+"});
+    else if(q&&l[0]===">")q.exp+=(q.exp?" ":"")+m;
+  }
+  quiz.qs.forEach((q,i)=>{if(!q.opts.some(o=>o.ok))throw Error(`${i+1}. soruda doğru cevap (+) yok`)});
+  if(!quiz.qs.length)throw Error("Hiç soru bulunamadı (? ile başlayan satır)");
+  return quiz;
+}
+const $=id=>document.getElementById(id);
+let quiz,i,score;
+function start(text){
+  try{quiz=parse(text)}catch(e){$("err").textContent=e.message;return}
+  $("err").textContent="";i=0;score=0;$("title").textContent=quiz.title;$("loader").open=false;show();
+}
+function show(){
+  $("prog").style.width=(i/quiz.qs.length*100)+"%";
+  $("meta").textContent=`Soru ${Math.min(i+1,quiz.qs.length)} / ${quiz.qs.length} · Doğru: ${score}`;
+  if(i>=quiz.qs.length){
+    $("stage").innerHTML=`<div class="card"><div class="meta">Sonuç</div><div class="score">${score} / ${quiz.qs.length}</div><div class="row"><button class="btn" id="again">Tekrar çöz</button></div></div>`;
+    $("again").onclick=()=>{i=0;score=0;show()};return;
+  }
+  const q=quiz.qs[i],c=document.createElement("div");c.className="card";
+  c.innerHTML=`<div class="q"></div>`;c.firstChild.textContent=q.text;
+  q.opts.forEach(o=>{const b=document.createElement("button");b.className="opt";b.textContent=o.text;
+    b.onclick=()=>{
+      if(o.ok)score++;
+      c.querySelectorAll(".opt").forEach((x,k)=>{x.disabled=true;if(q.opts[k].ok)x.classList.add("ok")});
+      if(!o.ok)b.classList.add("bad");
+      if(q.exp){const e=document.createElement("div");e.className="exp";e.textContent=q.exp;c.append(e)}
+      const n=document.createElement("button");n.className="btn";n.textContent=i+1<quiz.qs.length?"Sonraki":"Sonucu gör";
+      n.onclick=()=>{i++;show()};c.append(n);n.focus();
+      $("meta").textContent=`Soru ${i+1} / ${quiz.qs.length} · Doğru: ${score}`;
+    };c.append(b)});
+  $("stage").replaceChildren(c);
+}
+$("file").onchange=e=>{const f=e.target.files[0];if(f)f.text().then(t=>{$("src").value=t;start(t)})};
+$("load").onclick=()=>start($("src").value);
+$("copy").onclick=()=>navigator.clipboard.writeText($("prompt").value)
+  .then(()=>$("copied").textContent="Kopyalandı")
+  .catch(()=>{$("prompt").select();$("copied").textContent="Seçildi, Ctrl+C ile kopyala"});
+if(!QUIZZES.length)$("list").innerHTML=`<span class="meta">Henüz quiz yok. Claude'a "quiz yap: konu" de.</span>`;
+QUIZZES.forEach(t=>{const b=document.createElement("button");b.className="btn ghost";
+  b.textContent=parse(t).title;b.onclick=()=>start(t);$("list").append(b)});
+// En son eklenen quiz, yoksa örnek belge
+start(QUIZZES.at(-1)||`# Örnek: Karadeniz Çayı
+? Türkiye'de çay tarımı en çok hangi ilde yapılır?
+- Trabzon
++ Rize
+- Artvin
+> Rize, Türkiye çay üretiminin büyük kısmını karşılar.
+? Çay demlemek için kullanılan iki katlı demliğe ne denir?
++ Çaydanlık
+- Cezve
+- Semaver
+? Türk kahvesi hangi kapta pişirilir?
+- Demlik
++ Cezve
+- Fincan`);
+</script>
